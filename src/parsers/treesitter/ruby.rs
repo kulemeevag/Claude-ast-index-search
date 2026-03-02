@@ -46,13 +46,14 @@ impl LanguageParser for RubyParser {
         while let Some(m) = matches.next() {
             // Class definition
             if let Some(name_cap) = find_capture(m, idx_class_name) {
-                let name = node_text(content, &name_cap.node);
+                let raw_name = node_text(content, &name_cap.node);
                 let line = node_line(&name_cap.node);
+                let name = build_qualified_name(content, &name_cap.node, raw_name);
                 let parents = find_capture(m, idx_class_parent)
                     .map(|p| vec![(node_text(content, &p.node).to_string(), "extends".to_string())])
                     .unwrap_or_default();
                 symbols.push(ParsedSymbol {
-                    name: name.to_string(),
+                    name,
                     kind: SymbolKind::Class,
                     line,
                     signature: line_text(content, line).trim().to_string(),
@@ -63,10 +64,11 @@ impl LanguageParser for RubyParser {
 
             // Module definition
             if let Some(cap) = find_capture(m, idx_module_name) {
-                let name = node_text(content, &cap.node);
+                let raw_name = node_text(content, &cap.node);
                 let line = node_line(&cap.node);
+                let name = build_qualified_name(content, &cap.node, raw_name);
                 symbols.push(ParsedSymbol {
-                    name: name.to_string(),
+                    name,
                     kind: SymbolKind::Package,
                     line,
                     signature: line_text(content, line).trim().to_string(),
@@ -294,6 +296,47 @@ impl LanguageParser for RubyParser {
     }
 }
 
+/// Build a qualified name by walking up the AST to find enclosing class/module scopes.
+///
+/// For nested definitions like:
+///   class Event
+///     class CreateService
+///   end
+/// end
+///
+/// When processing `CreateService`, walks up the tree to find `Event` and returns `Event::CreateService`.
+/// Already-qualified names (e.g., `Admin::Dashboard` from `class Admin::Dashboard`) are preserved as-is
+/// and get parent scopes prepended if nested further.
+fn build_qualified_name(content: &str, name_node: &tree_sitter::Node, base_name: &str) -> String {
+    let mut scope_parts: Vec<String> = Vec::new();
+
+    // The name_node is the captured name (constant or scope_resolution).
+    // Its parent should be the class/module AST node.
+    let container = match name_node.parent() {
+        Some(n) if n.kind() == "class" || n.kind() == "module" => n,
+        _ => return base_name.to_string(),
+    };
+
+    // Walk up from the container's parent, looking for enclosing class/module nodes
+    let mut current = container.parent();
+    while let Some(node) = current {
+        if node.kind() == "class" || node.kind() == "module" {
+            if let Some(name_child) = node.child_by_field_name("name") {
+                scope_parts.push(node_text(content, &name_child).to_string());
+            }
+        }
+        current = node.parent();
+    }
+
+    if scope_parts.is_empty() {
+        base_name.to_string()
+    } else {
+        scope_parts.reverse();
+        scope_parts.push(base_name.to_string());
+        scope_parts.join("::")
+    }
+}
+
 /// Check if a name is an ALL_CAPS constant
 fn is_constant_name(name: &str) -> bool {
     !name.is_empty()
@@ -369,7 +412,55 @@ mod tests {
         let content = "module Admin\n  class Dashboard\n  end\nend\n";
         let symbols = RUBY_PARSER.parse_symbols(content).unwrap();
         assert!(symbols.iter().any(|s| s.name == "Admin" && s.kind == SymbolKind::Package));
-        assert!(symbols.iter().any(|s| s.name == "Dashboard" && s.kind == SymbolKind::Class));
+        assert!(symbols.iter().any(|s| s.name == "Admin::Dashboard" && s.kind == SymbolKind::Class),
+            "nested class should have qualified name, got: {:?}",
+            symbols.iter().map(|s| &s.name).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_parse_nested_class_class() {
+        // Common Rails pattern: class Event; class CreateService
+        let content = "class Event\n  class CreateService < Event::BaseService\n  end\nend\n";
+        let symbols = RUBY_PARSER.parse_symbols(content).unwrap();
+        assert!(symbols.iter().any(|s| s.name == "Event" && s.kind == SymbolKind::Class));
+        assert!(symbols.iter().any(|s| s.name == "Event::CreateService" && s.kind == SymbolKind::Class),
+            "nested class inside class should be qualified, got: {:?}",
+            symbols.iter().map(|s| &s.name).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_parse_triple_nesting() {
+        let content = "module Api\n  module V2\n    class UsersController < ApplicationController\n    end\n  end\nend\n";
+        let symbols = RUBY_PARSER.parse_symbols(content).unwrap();
+        assert!(symbols.iter().any(|s| s.name == "Api" && s.kind == SymbolKind::Package));
+        assert!(symbols.iter().any(|s| s.name == "Api::V2" && s.kind == SymbolKind::Package));
+        assert!(symbols.iter().any(|s| s.name == "Api::V2::UsersController" && s.kind == SymbolKind::Class));
+    }
+
+    #[test]
+    fn test_inline_namespace_unchanged() {
+        // Already-qualified names should stay as-is
+        let content = "class Stage::CountService < ApplicationService\nend\n";
+        let symbols = RUBY_PARSER.parse_symbols(content).unwrap();
+        assert!(symbols.iter().any(|s| s.name == "Stage::CountService" && s.kind == SymbolKind::Class));
+    }
+
+    #[test]
+    fn test_inline_namespace_inside_module() {
+        // class Admin::Dashboard inside module V2 → V2::Admin::Dashboard
+        let content = "module V2\n  class Admin::Dashboard\n  end\nend\n";
+        let symbols = RUBY_PARSER.parse_symbols(content).unwrap();
+        assert!(symbols.iter().any(|s| s.name == "V2" && s.kind == SymbolKind::Package));
+        assert!(symbols.iter().any(|s| s.name == "V2::Admin::Dashboard" && s.kind == SymbolKind::Class));
+    }
+
+    #[test]
+    fn test_nested_module_inside_class() {
+        let content = "class Event\n  module Types\n    class Stage\n    end\n  end\nend\n";
+        let symbols = RUBY_PARSER.parse_symbols(content).unwrap();
+        assert!(symbols.iter().any(|s| s.name == "Event" && s.kind == SymbolKind::Class));
+        assert!(symbols.iter().any(|s| s.name == "Event::Types" && s.kind == SymbolKind::Package));
+        assert!(symbols.iter().any(|s| s.name == "Event::Types::Stage" && s.kind == SymbolKind::Class));
     }
 
     #[test]
