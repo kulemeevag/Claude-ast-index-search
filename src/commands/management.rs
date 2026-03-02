@@ -27,6 +27,20 @@ pub fn cmd_rebuild(root: &Path, index_type: &str, index_deps: bool, no_ignore: b
         eprintln!("[verbose] db path: {:?}", db::get_db_path(root).ok());
     }
 
+    // Load project config (.ast-index.yaml)
+    let config = indexer::load_config(root).unwrap_or_default();
+    if verbose {
+        eprintln!("[verbose] config: {:?}", config);
+    }
+
+    // Apply config fallbacks: CLI flags > config > defaults
+    let no_ignore = if no_ignore { true } else { config.no_ignore.unwrap_or(false) };
+    let project_type = project_type.or_else(|| {
+        config.project_type.as_deref().and_then(indexer::ProjectType::from_str)
+    });
+    let config_exclude = config.exclude.clone();
+    let config_roots = config.roots.clone();
+
     // Explicit sub-projects mode
     if sub_projects {
         return cmd_rebuild_sub_projects(root, index_type, index_deps, no_ignore, verbose);
@@ -102,9 +116,26 @@ pub fn cmd_rebuild(root: &Path, index_type: &str, index_deps: bool, no_ignore: b
     db::init_db(&conn)?;
     if verbose { eprintln!("[verbose] DB opened + schema created in {:?}", t.elapsed()); }
 
+    // Merge config roots with saved extra roots
+    let mut all_extra_roots = saved_extra_roots;
+    if let Some(ref config_roots) = config_roots {
+        for cr in config_roots {
+            let resolved = if std::path::Path::new(cr).is_absolute() {
+                cr.clone()
+            } else {
+                root.join(cr).canonicalize()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| root.join(cr).to_string_lossy().to_string())
+            };
+            if !all_extra_roots.contains(&resolved) {
+                all_extra_roots.push(resolved);
+            }
+        }
+    }
+
     // Restore extra roots
-    if !saved_extra_roots.is_empty() {
-        let roots_json = serde_json::to_string(&saved_extra_roots)?;
+    if !all_extra_roots.is_empty() {
+        let roots_json = serde_json::to_string(&all_extra_roots)?;
         conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES ('extra_roots', ?1)",
             [&roots_json],
@@ -130,7 +161,7 @@ pub fn cmd_rebuild(root: &Path, index_type: &str, index_deps: bool, no_ignore: b
             println!("{}", "Rebuilding full index...".cyan());
             if verbose { eprintln!("[verbose] starting file walk + parse..."); }
             let t = Instant::now();
-            let walk = indexer::index_directory_with_type(&mut conn, root, true, no_ignore, project_type)?;
+            let walk = indexer::index_directory_with_config(&mut conn, root, true, no_ignore, project_type, config_exclude.as_deref())?;
             let mut file_count = walk.file_count;
             if verbose { eprintln!("[verbose] index_directory: {} files in {:?}", file_count, t.elapsed()); }
 
@@ -270,7 +301,7 @@ pub fn cmd_rebuild(root: &Path, index_type: &str, index_deps: bool, no_ignore: b
             println!("{}", "Rebuilding symbols index...".cyan());
             conn.execute("DELETE FROM symbols", [])?;
             conn.execute("DELETE FROM files", [])?;
-            let walk = indexer::index_directory_with_type(&mut conn, root, true, no_ignore, project_type)?;
+            let walk = indexer::index_directory_with_config(&mut conn, root, true, no_ignore, project_type, config_exclude.as_deref())?;
             println!("{}", format!("Indexed {} files", walk.file_count).green());
         }
         "modules" => {
@@ -365,7 +396,7 @@ fn cmd_rebuild_sub_projects(root: &Path, _index_type: &str, _index_deps: bool, n
         );
 
         let t = Instant::now();
-        match indexer::index_directory_scoped(&mut conn, root, path, true, no_ignore, None) {
+        match indexer::index_directory_scoped(&mut conn, root, path, true, no_ignore, None, None) {
             Ok(walk) => {
                 total_files += walk.file_count;
                 if verbose {
@@ -511,9 +542,17 @@ pub fn cmd_stats(root: &Path, format: &str) -> Result<()> {
         .map(|m| m.len())
         .unwrap_or(0);
 
+    // Load config for project_type override
+    let config = indexer::load_config(root);
+    let config_project_type = config.as_ref()
+        .and_then(|c| c.project_type.as_deref())
+        .and_then(indexer::ProjectType::from_str);
+
     if format == "json" {
+        let detected = indexer::detect_project_type(root);
+        let project_type = config_project_type.unwrap_or(detected);
         let result = serde_json::json!({
-            "project": indexer::detect_project_type(root).as_str(),
+            "project": project_type.as_str(),
             "stats": stats,
             "db_size_bytes": db_size,
             "db_path": db_path.display().to_string(),
@@ -522,8 +561,9 @@ pub fn cmd_stats(root: &Path, format: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Detect project type
-    let project_type = indexer::detect_project_type(root);
+    // Detect project type (config overrides auto-detect)
+    let detected = indexer::detect_project_type(root);
+    let project_type = config_project_type.unwrap_or(detected);
 
     println!("{}", "Index Statistics:".bold());
     println!("  Project:    {}", project_type.as_str());

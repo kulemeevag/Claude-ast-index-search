@@ -107,6 +107,46 @@ impl ProjectType {
     }
 }
 
+/// Project configuration loaded from `.ast-index.yaml`
+#[derive(serde::Deserialize, Default, Debug)]
+pub struct ProjectConfig {
+    pub project_type: Option<String>,
+    pub roots: Option<Vec<String>>,
+    pub exclude: Option<Vec<String>>,
+    pub no_ignore: Option<bool>,
+}
+
+/// Load project config from `.ast-index.yaml` or `.ast-index.yml` in the given root.
+/// Returns `None` if no config file found or on parse error (with warning).
+pub fn load_config(root: &Path) -> Option<ProjectConfig> {
+    let yaml_path = root.join(".ast-index.yaml");
+    let yml_path = root.join(".ast-index.yml");
+    let config_path = if yaml_path.exists() {
+        yaml_path
+    } else if yml_path.exists() {
+        yml_path
+    } else {
+        return None;
+    };
+
+    match fs::read_to_string(&config_path) {
+        Ok(content) => match serde_yaml::from_str::<ProjectConfig>(&content) {
+            Ok(config) => {
+                eprintln!("Loaded config from {}", config_path.display());
+                Some(config)
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to parse {}: {}", config_path.display(), e);
+                None
+            }
+        },
+        Err(e) => {
+            eprintln!("Warning: failed to read {}: {}", config_path.display(), e);
+            None
+        }
+    }
+}
+
 /// Check if project has build system markers (Gradle/Maven build files)
 pub fn has_android_markers(root: &Path) -> bool {
     root.join("settings.gradle.kts").exists()
@@ -540,17 +580,22 @@ pub struct WalkResult {
 }
 
 pub fn index_directory(conn: &mut Connection, root: &Path, progress: bool, no_ignore: bool) -> Result<WalkResult> {
-    index_directory_scoped(conn, root, root, progress, no_ignore, None)
+    index_directory_scoped(conn, root, root, progress, no_ignore, None, None)
 }
 
 pub fn index_directory_with_type(conn: &mut Connection, root: &Path, progress: bool, no_ignore: bool, project_type: Option<ProjectType>) -> Result<WalkResult> {
-    index_directory_scoped(conn, root, root, progress, no_ignore, project_type)
+    index_directory_scoped(conn, root, root, progress, no_ignore, project_type, None)
+}
+
+pub fn index_directory_with_config(conn: &mut Connection, root: &Path, progress: bool, no_ignore: bool, project_type: Option<ProjectType>, extra_exclude: Option<&[String]>) -> Result<WalkResult> {
+    index_directory_scoped(conn, root, root, progress, no_ignore, project_type, extra_exclude)
 }
 
 /// Index a directory, walking `walk_dir` but storing paths relative to `root`.
 /// When walk_dir == root, behaves identically to index_directory.
 /// When walk_dir is a subdirectory of root, only indexes that subdirectory.
-pub fn index_directory_scoped(conn: &mut Connection, root: &Path, walk_dir: &Path, progress: bool, no_ignore: bool, project_type_override: Option<ProjectType>) -> Result<WalkResult> {
+/// `extra_exclude` — additional directory names to skip (from .ast-index.yaml config).
+pub fn index_directory_scoped(conn: &mut Connection, root: &Path, walk_dir: &Path, progress: bool, no_ignore: bool, project_type_override: Option<ProjectType>, extra_exclude: Option<&[String]>) -> Result<WalkResult> {
     use ignore::WalkBuilder;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
@@ -582,6 +627,9 @@ pub fn index_directory_scoped(conn: &mut Connection, root: &Path, walk_dir: &Pat
     let arc_root = if no_ignore { None } else { find_arc_root(walk_dir).or_else(|| find_arc_root(root)) };
     if verbose { eprintln!("[verbose] find_arc_root: {:?} in {:?}", arc_root.as_ref().map(|p| p.display().to_string()), t.elapsed()); }
 
+    // Collect extra exclude dirs from config
+    let extra_exc: Vec<String> = extra_exclude.unwrap_or(&[]).to_vec();
+
     let mut builder = WalkBuilder::new(walk_dir);
     builder
         .hidden(true)
@@ -589,7 +637,20 @@ pub fn index_directory_scoped(conn: &mut Connection, root: &Path, walk_dir: &Pat
         .max_depth(Some(50))     // Prevent runaway traversal in deeply nested structures
         .git_ignore(use_git)     // Respect .gitignore only if .git exists
         .git_exclude(use_git)
-        .filter_entry(|entry| !is_excluded_dir(entry));
+        .filter_entry(move |entry| {
+            if is_excluded_dir(entry) {
+                return false;
+            }
+            // Check extra exclude dirs from config
+            if !extra_exc.is_empty() && entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                if let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
+                    if extra_exc.iter().any(|e| e == name) {
+                        return false;
+                    }
+                }
+            }
+            true
+        });
     // Arc repos: respect .gitignore and .arcignore without .git directory
     if let Some(ref arc) = arc_root {
         if verbose { eprintln!("[verbose] arc mode: adding .gitignore + .arcignore custom ignore filenames"); }

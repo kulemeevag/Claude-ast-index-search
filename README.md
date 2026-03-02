@@ -1,4 +1,4 @@
-# ast-index v3.25.0
+# ast-index v3.25.1
 
 Fast code search CLI for 23 programming languages. Native Rust implementation.
 
@@ -335,7 +335,57 @@ ios_assets (id, module_id, type, name, file_path)
 ios_asset_usages (id, asset_id, usage_file, usage_line, usage_type)
 ```
 
+## Configuration File
+
+Create `.ast-index.yaml` in your project root to configure ast-index:
+
+```yaml
+# Force project type (useful when auto-detection fails)
+project_type: bsl
+
+# Additional directories to index
+roots:
+  - "../shared-lib"
+  - "../common-modules"
+
+# Directories to exclude from indexing
+exclude:
+  - "vendor"
+  - "build"
+  - "node_modules"
+
+# Include files ignored by .gitignore
+no_ignore: false
+```
+
+All fields are optional. CLI flags override config file values.
+
+### Examples
+
+**1C:Enterprise (BSL) project:**
+```yaml
+project_type: bsl
+```
+
+**Monorepo with shared libraries:**
+```yaml
+project_type: android
+roots:
+  - "../core"
+  - "../network"
+```
+
+**Project with generated code to skip:**
+```yaml
+exclude:
+  - "generated"
+  - "proto/gen"
+```
+
 ## Changelog
+
+### 3.25.1
+- **Configuration file support** — create `.ast-index.yaml` in project root to set `project_type`, `roots`, `exclude`, `no_ignore` (CLI flags override config values)
 
 ### 3.25.0
 - **Fix BSL parser ABI** — regenerate parser.c with ABI 15 for tree-sitter 0.26 compatibility (BSL tests were silently failing since v3.24.0)
