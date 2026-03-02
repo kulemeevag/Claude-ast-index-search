@@ -35,8 +35,6 @@ module.exports = grammar({
 
   extras: $ => [/\s/, $.comment],
 
-  word: $ => $.identifier,
-
   conflicts: $ => [
     [$.primary_expression, $.lvalue],
     [$._definition, $.procedure_declaration, $.function_declaration],
@@ -60,7 +58,7 @@ module.exports = grammar({
     comment: _ => token(seq('//', /.*/)),
 
     // Identifiers: Latin + Cyrillic + underscore
-    identifier: _ => /[A-Za-z\u0410-\u044F\u0401\u0451_][A-Za-z0-9\u0410-\u044F\u0401\u0451_]*/,
+    identifier: _ => token(prec(-1, /[A-Za-z\u0410-\u044F\u0401\u0451_][A-Za-z0-9\u0410-\u044F\u0401\u0451_]*/)),
 
     // === Annotations (compilation directives & extension annotations) ===
     annotation: $ => prec.left(seq(

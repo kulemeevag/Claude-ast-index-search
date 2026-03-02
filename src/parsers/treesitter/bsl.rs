@@ -323,7 +323,11 @@ mod tests {
     #[test]
     fn test_parse_procedure_ru() {
         let content = "Процедура МояПроцедура()\nКонецПроцедуры\n";
+        // Debug: parse tree
+        let tree = parse_tree(content, &BSL_LANGUAGE).unwrap();
+        eprintln!("DEBUG tree: {}", tree.root_node().to_sexp());
         let symbols = BSL_PARSER.parse_symbols(content).unwrap();
+        eprintln!("DEBUG symbols: {:?}", symbols.iter().map(|s| (&s.name, &s.kind)).collect::<Vec<_>>());
         assert!(symbols.iter().any(|s| s.name == "МояПроцедура" && s.kind == SymbolKind::Procedure));
     }
 
