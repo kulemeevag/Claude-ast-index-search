@@ -204,6 +204,23 @@ impl LanguageParser for RubyParser {
                         }
                     }
 
+                    // Rails ActiveStorage / enum / delegate / encrypts / store_accessor
+                    "has_one_attached" | "has_many_attached"
+                    | "enum" | "delegate" | "encrypts" | "store_accessor"
+                        if !has_receiver =>
+                    {
+                        if let Some(arg) = first_arg {
+                            let sym_name = normalize_symbol(arg);
+                            symbols.push(ParsedSymbol {
+                                name: format!("{} :{}", method, sym_name),
+                                kind: SymbolKind::Property,
+                                line,
+                                signature: line_text(content, line).trim().to_string(),
+                                parents: vec![],
+                            });
+                        }
+                    }
+
                     // Rails validates / validate
                     "validates" | "validate" if !has_receiver => {
                         if let Some(arg) = first_arg {
@@ -578,6 +595,18 @@ end
         let symbols = RUBY_PARSER.parse_symbols(content).unwrap();
         assert!(symbols.iter().any(|s| s.name == "validate :timezone_must_be_valid" && s.kind == SymbolKind::Annotation));
         assert!(symbols.iter().any(|s| s.name == "validate :password_complexity" && s.kind == SymbolKind::Annotation));
+    }
+
+    #[test]
+    fn test_parse_rails_dsl_methods() {
+        let content = "class User < ApplicationRecord\n  enum :role, { admin: 0, user: 1 }\n  delegate :name, to: :profile\n  has_one_attached :avatar\n  has_many_attached :photos\n  encrypts :access_token\n  store_accessor :settings, :theme\nend\n";
+        let symbols = RUBY_PARSER.parse_symbols(content).unwrap();
+        assert!(symbols.iter().any(|s| s.name == "enum :role" && s.kind == SymbolKind::Property));
+        assert!(symbols.iter().any(|s| s.name == "delegate :name" && s.kind == SymbolKind::Property));
+        assert!(symbols.iter().any(|s| s.name == "has_one_attached :avatar" && s.kind == SymbolKind::Property));
+        assert!(symbols.iter().any(|s| s.name == "has_many_attached :photos" && s.kind == SymbolKind::Property));
+        assert!(symbols.iter().any(|s| s.name == "encrypts :access_token" && s.kind == SymbolKind::Property));
+        assert!(symbols.iter().any(|s| s.name == "store_accessor :settings" && s.kind == SymbolKind::Property));
     }
 
     #[test]
