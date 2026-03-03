@@ -196,12 +196,12 @@ impl LanguageParser for RubyParser {
                         }
                     }
 
-                    // Rails validates
-                    "validates" if !has_receiver => {
+                    // Rails validates / validate
+                    "validates" | "validate" if !has_receiver => {
                         if let Some(arg) = first_arg {
                             let sym_name = normalize_symbol(arg);
                             symbols.push(ParsedSymbol {
-                                name: format!("validates :{}", sym_name),
+                                name: format!("{} :{}", method, sym_name),
                                 kind: SymbolKind::Annotation,
                                 line,
                                 signature: line_text(content, line).trim().to_string(),
@@ -555,6 +555,14 @@ end
         let symbols = RUBY_PARSER.parse_symbols(content).unwrap();
         assert!(symbols.iter().any(|s| s.name == "validates :name" && s.kind == SymbolKind::Annotation));
         assert!(symbols.iter().any(|s| s.name == "validates :email" && s.kind == SymbolKind::Annotation));
+    }
+
+    #[test]
+    fn test_parse_rails_validate_without_s() {
+        let content = "class User < ApplicationRecord\n  validate :timezone_must_be_valid\n  validate :password_complexity\nend\n";
+        let symbols = RUBY_PARSER.parse_symbols(content).unwrap();
+        assert!(symbols.iter().any(|s| s.name == "validate :timezone_must_be_valid" && s.kind == SymbolKind::Annotation));
+        assert!(symbols.iter().any(|s| s.name == "validate :password_complexity" && s.kind == SymbolKind::Annotation));
     }
 
     #[test]
