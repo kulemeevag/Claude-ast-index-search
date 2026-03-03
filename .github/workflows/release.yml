@@ -167,3 +167,21 @@ jobs:
           git diff --staged --quiet && echo "Formula already up to date" && exit 0
           git commit -m "Update to ${{ env.RELEASE_TAG }}"
           git push
+
+  update-winget:
+    name: Update Winget Package
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - name: Extract version
+        id: version
+        shell: bash
+        run: echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Update winget manifest
+        uses: vedantmgoyal9/winget-releaser@main
+        with:
+          identifier: defendend.ast-index
+          version: ${{ steps.version.outputs.version }}
+          installers-regex: 'windows-x86_64\.zip$'
+          token: ${{ secrets.WINGET_TOKEN }}
