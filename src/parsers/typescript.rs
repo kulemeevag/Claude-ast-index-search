@@ -111,6 +111,42 @@ pub fn parse_typescript_symbols(content: &str) -> Result<Vec<ParsedSymbol>> {
     ).unwrap());
     let namespace_re = &*NAMESPACE_RE;
 
+    // Vue Composition API reactive variables: const x = ref(), computed(), reactive(), etc.
+    static REACTIVE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+        r"(?m)^[ \t]*(?:export\s+)?(?:const|let)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:ref|reactive|computed|readonly|shallowRef|shallowReactive|toRef|toRefs)\s*(?:<[^>]*>)?\s*\("
+    ).unwrap());
+    let reactive_re = &*REACTIVE_RE;
+
+    // Vue lifecycle hooks and watchers: watch(), watchEffect(), onMounted(), etc.
+    static VUE_LIFECYCLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+        r"(?m)^[ \t]*(watch|watchEffect|onMounted|onUnmounted|onBeforeMount|onBeforeUnmount|onUpdated|onBeforeUpdate|onActivated|onDeactivated|onErrorCaptured)\s*\("
+    ).unwrap());
+    let vue_lifecycle_re = &*VUE_LIFECYCLE_RE;
+
+    // export default { ... } (object literal)
+    static EXPORT_DEFAULT_OBJ_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+        r"(?m)^export\s+default\s+\{"
+    ).unwrap());
+    let export_default_obj_re = &*EXPORT_DEFAULT_OBJ_RE;
+
+    // export default someFunction(...) or export default defineComponent(...)
+    static EXPORT_DEFAULT_CALL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+        r"(?m)^export\s+default\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\("
+    ).unwrap());
+    let export_default_call_re = &*EXPORT_DEFAULT_CALL_RE;
+
+    // export default identifier; (re-export of a variable/const)
+    static EXPORT_DEFAULT_IDENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+        r"(?m)^export\s+default\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*;?\s*$"
+    ).unwrap());
+    let export_default_ident_re = &*EXPORT_DEFAULT_IDENT_RE;
+
+    // Vue macros: defineProps, defineEmits, defineModel, defineStore, defineExpose, withDefaults
+    static DEFINE_MACRO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+        r"(?m)^[ \t]*(?:(?:export\s+)?(?:const|let)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*)?(defineProps|defineEmits|defineModel|defineStore|defineExpose|withDefaults)\s*(?:<[^>]*>)?\s*\("
+    ).unwrap());
+    let define_macro_re = &*DEFINE_MACRO_RE;
+
     // Vue defineComponent: export default defineComponent({ name: 'ComponentName' })
     static VUE_COMPONENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(
         r#"(?m)defineComponent\s*\(\s*\{[^}]*name\s*:\s*['"]([A-Z][A-Za-z0-9_]*)['"]"#
@@ -477,6 +513,127 @@ pub fn parse_typescript_symbols(content: &str) -> Result<Vec<ParsedSymbol>> {
         });
     }
 
+    // Parse export default { ... }
+    for cap in export_default_obj_re.captures_iter(content) {
+        let start = cap.get(0).unwrap().start();
+        let line = find_line_number(content, start);
+        let line_text = lines.get(line - 1).unwrap_or(&"");
+
+        symbols.push(ParsedSymbol {
+            name: "default".to_string(),
+            kind: SymbolKind::Object,
+            line,
+            signature: line_text.trim().to_string(),
+            parents: vec![],
+        });
+    }
+
+    // Parse export default someFunction(...)
+    for cap in export_default_call_re.captures_iter(content) {
+        let name = cap.get(1).unwrap().as_str();
+        let start = cap.get(0).unwrap().start();
+        let line = find_line_number(content, start);
+        let line_text = lines.get(line - 1).unwrap_or(&"");
+
+        // Skip if already caught as export default object
+        if name == "default" {
+            continue;
+        }
+
+        symbols.push(ParsedSymbol {
+            name: name.to_string(),
+            kind: SymbolKind::Function,
+            line,
+            signature: line_text.trim().to_string(),
+            parents: vec![],
+        });
+    }
+
+    // Parse export default identifier;
+    for cap in export_default_ident_re.captures_iter(content) {
+        let name = cap.get(1).unwrap().as_str();
+        let start = cap.get(0).unwrap().start();
+        let line = find_line_number(content, start);
+        let line_text = lines.get(line - 1).unwrap_or(&"");
+
+        symbols.push(ParsedSymbol {
+            name: format!("default({})", name),
+            kind: SymbolKind::Object,
+            line,
+            signature: line_text.trim().to_string(),
+            parents: vec![],
+        });
+    }
+
+    // Parse Vue macros (defineProps, defineEmits, defineStore, etc.)
+    for cap in define_macro_re.captures_iter(content) {
+        let variable = cap.get(1).map(|m| m.as_str());
+        let macro_name = cap.get(2).unwrap().as_str();
+        let start = cap.get(0).unwrap().start();
+        let line = find_line_number(content, start);
+        let line_text = lines.get(line - 1).unwrap_or(&"");
+
+        let name = variable.unwrap_or(macro_name);
+
+        // Skip if already caught by HOOK_RE (e.g. useAuthStore = defineStore)
+        if name.starts_with("use") && name.len() > 3 && name.chars().nth(3).map(|c| c.is_uppercase()).unwrap_or(false) {
+            continue;
+        }
+
+        let kind = match macro_name {
+            "defineStore" => SymbolKind::Function,
+            _ => SymbolKind::Property, // defineProps, defineEmits, defineModel, defineExpose, withDefaults
+        };
+
+        symbols.push(ParsedSymbol {
+            name: name.to_string(),
+            kind,
+            line,
+            signature: line_text.trim().to_string(),
+            parents: vec![],
+        });
+    }
+
+    // Parse Vue Composition API reactive variables
+    for cap in reactive_re.captures_iter(content) {
+        let name = cap.get(1).unwrap().as_str();
+        let start = cap.get(0).unwrap().start();
+        let line = find_line_number(content, start);
+        let line_text = lines.get(line - 1).unwrap_or(&"");
+
+        // Skip if already caught by ARROW_FUNC_RE or HOOK_RE
+        if arrow_func_names.contains(name) {
+            continue;
+        }
+        if name.starts_with("use") && name.len() > 3 && name.chars().nth(3).map(|c| c.is_uppercase()).unwrap_or(false) {
+            continue;
+        }
+
+        symbols.push(ParsedSymbol {
+            name: name.to_string(),
+            kind: SymbolKind::Property,
+            line,
+            signature: line_text.trim().to_string(),
+            parents: vec![],
+        });
+    }
+
+    // Parse Vue lifecycle hooks and watchers
+    for cap in vue_lifecycle_re.captures_iter(content) {
+        let name = cap.get(1).unwrap().as_str();
+        let start = cap.get(0).unwrap().start();
+        let line = find_line_number(content, start);
+        let line_text = lines.get(line - 1).unwrap_or(&"");
+
+        symbols.push(ParsedSymbol {
+            name: name.to_string(),
+            kind: SymbolKind::Annotation,
+            line,
+            signature: line_text.trim().to_string(),
+            parents: vec![],
+        });
+    }
+
     // Deduplicate symbols by name+line (some patterns may overlap)
     let mut seen: std::collections::HashSet<(String, usize)> = std::collections::HashSet::new();
     symbols.retain(|s| seen.insert((s.name.clone(), s.line)));
@@ -772,5 +929,151 @@ div { color: red; }
         assert!(lines[1].contains("import"), "line 2 should have import");
         assert!(lines[2].contains("let count"), "line 3 should have let count");
         assert!(lines[3].contains("function increment"), "line 4 should have function");
+    }
+
+    #[test]
+    fn test_parse_vue_reactive_variables() {
+        let content = r#"
+const count = ref(0)
+const items = reactive<Item[]>([])
+const doubled = computed(() => count.value * 2)
+const name = shallowRef('hello')
+const data = readonly(state)
+const x = toRef(props, 'x')
+"#;
+        let symbols = parse_typescript_symbols(content).unwrap();
+        assert!(symbols.iter().any(|s| s.name == "count" && s.kind == SymbolKind::Property),
+            "should find 'count' as reactive property");
+        assert!(symbols.iter().any(|s| s.name == "items" && s.kind == SymbolKind::Property),
+            "should find 'items' as reactive property");
+        assert!(symbols.iter().any(|s| s.name == "doubled" && s.kind == SymbolKind::Property),
+            "should find 'doubled' as reactive property");
+        assert!(symbols.iter().any(|s| s.name == "name" && s.kind == SymbolKind::Property),
+            "should find 'name' as reactive property");
+        assert!(symbols.iter().any(|s| s.name == "data" && s.kind == SymbolKind::Property),
+            "should find 'data' as reactive property");
+        assert!(symbols.iter().any(|s| s.name == "x" && s.kind == SymbolKind::Property),
+            "should find 'x' as reactive property");
+    }
+
+    #[test]
+    fn test_parse_vue_lifecycle_hooks() {
+        let content = r#"
+onMounted(() => {
+  console.log('mounted')
+})
+onUnmounted(() => cleanup())
+watch(count, (val) => console.log(val))
+watchEffect(() => console.log(count.value))
+"#;
+        let symbols = parse_typescript_symbols(content).unwrap();
+        assert!(symbols.iter().any(|s| s.name == "onMounted" && s.kind == SymbolKind::Annotation),
+            "should find 'onMounted' as lifecycle hook");
+        assert!(symbols.iter().any(|s| s.name == "onUnmounted" && s.kind == SymbolKind::Annotation),
+            "should find 'onUnmounted' as lifecycle hook");
+        assert!(symbols.iter().any(|s| s.name == "watch" && s.kind == SymbolKind::Annotation),
+            "should find 'watch' as lifecycle hook");
+        assert!(symbols.iter().any(|s| s.name == "watchEffect" && s.kind == SymbolKind::Annotation),
+            "should find 'watchEffect' as lifecycle hook");
+    }
+
+    #[test]
+    fn test_parse_export_default_object() {
+        let content = r#"
+export default {
+  install(app) {
+    app.component('MyComponent', MyComponent)
+  }
+}
+"#;
+        let symbols = parse_typescript_symbols(content).unwrap();
+        assert!(symbols.iter().any(|s| s.name == "default" && s.kind == SymbolKind::Object),
+            "should find 'default' as object export");
+    }
+
+    #[test]
+    fn test_parse_export_default_call() {
+        let content = r#"
+export default createRouter({
+  history: createWebHistory(),
+  routes,
+})
+"#;
+        let symbols = parse_typescript_symbols(content).unwrap();
+        assert!(symbols.iter().any(|s| s.name == "createRouter" && s.kind == SymbolKind::Function),
+            "should find 'createRouter' as default export call");
+    }
+
+    #[test]
+    fn test_parse_export_default_identifier() {
+        let content = r#"
+const router = createRouter({ routes })
+
+export default router;
+"#;
+        let symbols = parse_typescript_symbols(content).unwrap();
+        assert!(symbols.iter().any(|s| s.name == "default(router)" && s.kind == SymbolKind::Object),
+            "should find 'default(router)' as re-exported identifier");
+    }
+
+    #[test]
+    fn test_parse_vue_macros() {
+        let content = r#"
+const props = defineProps<{ msg: string }>()
+const emit = defineEmits<{ click: [] }>()
+defineExpose({ count })
+const model = defineModel<string>()
+"#;
+        let symbols = parse_typescript_symbols(content).unwrap();
+        assert!(symbols.iter().any(|s| s.name == "props" && s.kind == SymbolKind::Property),
+            "should find 'props' from defineProps");
+        assert!(symbols.iter().any(|s| s.name == "emit" && s.kind == SymbolKind::Property),
+            "should find 'emit' from defineEmits");
+        assert!(symbols.iter().any(|s| s.name == "defineExpose" && s.kind == SymbolKind::Property),
+            "should find 'defineExpose' without variable");
+        assert!(symbols.iter().any(|s| s.name == "model" && s.kind == SymbolKind::Property),
+            "should find 'model' from defineModel");
+    }
+
+    #[test]
+    fn test_parse_define_store() {
+        let content = r#"
+export const useAuthStore = defineStore('auth', () => {
+  const user = ref(null)
+  return { user }
+})
+"#;
+        let symbols = parse_typescript_symbols(content).unwrap();
+        // useAuthStore should be caught by HOOK_RE (useXxx pattern), not as defineStore
+        assert!(symbols.iter().any(|s| s.name == "useAuthStore" && s.kind == SymbolKind::Function),
+            "should find 'useAuthStore' as hook/function");
+        // Should also find reactive variable inside
+        assert!(symbols.iter().any(|s| s.name == "user" && s.kind == SymbolKind::Property),
+            "should find 'user' as reactive property");
+    }
+
+    #[test]
+    fn test_vue_composition_api_full() {
+        let content = "<template>\n  <div>{{ count }}</div>\n</template>\n\n<script setup lang=\"ts\">\nimport { ref, computed, onMounted } from 'vue'\n\nconst props = defineProps<{ initial: number }>()\nconst emit = defineEmits<{ update: [value: number] }>()\n\nconst count = ref(props.initial)\nconst doubled = computed(() => count.value * 2)\n\nfunction increment() {\n  count.value++\n  emit('update', count.value)\n}\n\nonMounted(() => {\n  console.log('ready')\n})\n</script>\n";
+
+        let script = extract_vue_script(content);
+        let symbols = parse_typescript_symbols(&script).unwrap();
+
+        // Function
+        assert!(symbols.iter().any(|s| s.name == "increment" && s.kind == SymbolKind::Function),
+            "should find 'increment' function");
+        // Reactive variables
+        assert!(symbols.iter().any(|s| s.name == "count" && s.kind == SymbolKind::Property),
+            "should find 'count' as reactive ref");
+        assert!(symbols.iter().any(|s| s.name == "doubled" && s.kind == SymbolKind::Property),
+            "should find 'doubled' as computed");
+        // Vue macros
+        assert!(symbols.iter().any(|s| s.name == "props" && s.kind == SymbolKind::Property),
+            "should find 'props' from defineProps");
+        assert!(symbols.iter().any(|s| s.name == "emit" && s.kind == SymbolKind::Property),
+            "should find 'emit' from defineEmits");
+        // Lifecycle
+        assert!(symbols.iter().any(|s| s.name == "onMounted" && s.kind == SymbolKind::Annotation),
+            "should find 'onMounted' lifecycle hook");
     }
 }
