@@ -275,8 +275,18 @@ impl LanguageParser for RubyParser {
                         }
                     }
 
-                    // RSpec describe / context
-                    "describe" | "context" if !has_receiver => {
+                    // RSpec describe / context (allow RSpec.describe with receiver)
+                    "describe" | "context" | "shared_examples" | "shared_context"
+                    | "shared_examples_for" => {
+                        // Allow RSpec.describe (has receiver), skip other receivers
+                        if has_receiver {
+                            let receiver_text = call_node
+                                .and_then(|n| n.child_by_field_name("receiver"))
+                                .map(|r| node_text(content, &r));
+                            if receiver_text != Some("RSpec") {
+                                continue;
+                            }
+                        }
                         if let Some(arg) = first_arg {
                             let desc = arg.trim_matches(|c| c == '\'' || c == '"');
                             symbols.push(ParsedSymbol {
@@ -630,9 +640,11 @@ end
 
     #[test]
     fn test_parse_rspec_describe_context() {
-        let content = r#"describe "User" do
-  context "when valid" do
-    it "returns true" do
+        let content = r#"RSpec.describe User, type: :model do
+  describe "validations" do
+    context "when valid" do
+      it "returns true" do
+      end
     end
   end
 end
@@ -640,10 +652,25 @@ end
         let symbols = RUBY_PARSER.parse_symbols(content).unwrap();
         assert!(symbols.iter().any(|s|
             s.name.contains("describe") && s.name.contains("User") && s.kind == SymbolKind::Class
+        ), "should find RSpec.describe with receiver");
+        assert!(symbols.iter().any(|s|
+            s.name.contains("describe") && s.name.contains("validations") && s.kind == SymbolKind::Class
         ));
         assert!(symbols.iter().any(|s|
             s.name.contains("context") && s.name.contains("when valid") && s.kind == SymbolKind::Class
         ));
+    }
+
+    #[test]
+    fn test_parse_rspec_shared_examples() {
+        let content = "RSpec.shared_examples \"authenticatable\" do\n  it \"authenticates\" do\n  end\nend\n\nshared_context \"with admin\" do\n  let(:admin) { create(:admin) }\nend\n";
+        let symbols = RUBY_PARSER.parse_symbols(content).unwrap();
+        assert!(symbols.iter().any(|s|
+            s.name.contains("shared_examples") && s.name.contains("authenticatable") && s.kind == SymbolKind::Class
+        ), "should find RSpec.shared_examples");
+        assert!(symbols.iter().any(|s|
+            s.name.contains("shared_context") && s.name.contains("with admin") && s.kind == SymbolKind::Class
+        ), "should find shared_context");
     }
 
     #[test]
