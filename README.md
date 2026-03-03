@@ -816,6 +816,14 @@ claude plugin update ast-index
 claude plugin uninstall ast-index
 ```
 
+### Gemini CLI
+
+The ast-index skill also works with Gemini CLI:
+
+```bash
+gemini skills install https://github.com/defendend/Claude-ast-index-search.git --path plugin/skills/ast-index
+```
+
 ## License
 
 MIT
