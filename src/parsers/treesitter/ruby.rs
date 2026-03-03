@@ -153,12 +153,12 @@ impl LanguageParser for RubyParser {
                         }
                     }
 
-                    // include / extend / prepend
+                    // include / extend / prepend — Annotation (not Import) so outline shows them
                     "include" | "extend" | "prepend" if !has_receiver => {
                         if let Some(arg) = first_arg {
                             symbols.push(ParsedSymbol {
                                 name: format!("{} {}", method, arg),
-                                kind: SymbolKind::Import,
+                                kind: SymbolKind::Annotation,
                                 line,
                                 signature: line_text(content, line).trim().to_string(),
                                 parents: vec![],
@@ -511,9 +511,9 @@ mod tests {
     fn test_parse_include_extend_prepend() {
         let content = "class User\n  include Authenticatable\n  extend ClassMethods\n  prepend Trackable\nend\n";
         let symbols = RUBY_PARSER.parse_symbols(content).unwrap();
-        assert!(symbols.iter().any(|s| s.name == "include Authenticatable" && s.kind == SymbolKind::Import));
-        assert!(symbols.iter().any(|s| s.name == "extend ClassMethods" && s.kind == SymbolKind::Import));
-        assert!(symbols.iter().any(|s| s.name == "prepend Trackable" && s.kind == SymbolKind::Import));
+        assert!(symbols.iter().any(|s| s.name == "include Authenticatable" && s.kind == SymbolKind::Annotation));
+        assert!(symbols.iter().any(|s| s.name == "extend ClassMethods" && s.kind == SymbolKind::Annotation));
+        assert!(symbols.iter().any(|s| s.name == "prepend Trackable" && s.kind == SymbolKind::Annotation));
     }
 
     #[test]
@@ -670,8 +670,8 @@ end
 
         // Imports
         assert!(symbols.iter().any(|s| s.name == "json" && s.kind == SymbolKind::Import));
-        assert!(symbols.iter().any(|s| s.name == "include Publishable" && s.kind == SymbolKind::Import));
-        assert!(symbols.iter().any(|s| s.name == "extend Searchable" && s.kind == SymbolKind::Import));
+        assert!(symbols.iter().any(|s| s.name == "include Publishable" && s.kind == SymbolKind::Annotation));
+        assert!(symbols.iter().any(|s| s.name == "extend Searchable" && s.kind == SymbolKind::Annotation));
 
         // Class
         assert!(symbols.iter().any(|s| s.name == "Post" && s.kind == SymbolKind::Class));
