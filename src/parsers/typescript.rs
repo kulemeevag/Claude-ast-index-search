@@ -484,28 +484,50 @@ pub fn parse_typescript_symbols(content: &str) -> Result<Vec<ParsedSymbol>> {
     Ok(symbols)
 }
 
-/// Extract script content from Vue SFC
+/// Extract script content from Vue SFC, preserving line numbers
 pub fn extract_vue_script(content: &str) -> String {
     static SCRIPT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<script[^>]*>(.*?)</script>").unwrap());
     let script_re = &*SCRIPT_RE;
 
-    script_re.captures_iter(content)
-        .filter_map(|cap| cap.get(1))
-        .map(|m| m.as_str())
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut result = String::new();
+    let mut last_end = 0;
+
+    for cap in script_re.captures_iter(content) {
+        let inner = cap.get(1).unwrap();
+        // Add empty lines for all content before this script block
+        let prefix = &content[last_end..inner.start()];
+        for ch in prefix.chars() {
+            if ch == '\n' {
+                result.push('\n');
+            }
+        }
+        result.push_str(inner.as_str());
+        last_end = inner.end();
+    }
+    result
 }
 
-/// Extract script content from Svelte component
+/// Extract script content from Svelte component, preserving line numbers
 pub fn extract_svelte_script(content: &str) -> String {
     static SCRIPT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<script[^>]*>(.*?)</script>").unwrap());
     let script_re = &*SCRIPT_RE;
 
-    script_re.captures_iter(content)
-        .filter_map(|cap| cap.get(1))
-        .map(|m| m.as_str())
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut result = String::new();
+    let mut last_end = 0;
+
+    for cap in script_re.captures_iter(content) {
+        let inner = cap.get(1).unwrap();
+        // Add empty lines for all content before this script block
+        let prefix = &content[last_end..inner.start()];
+        for ch in prefix.chars() {
+            if ch == '\n' {
+                result.push('\n');
+            }
+        }
+        result.push_str(inner.as_str());
+        last_end = inner.end();
+    }
+    result
 }
 
 fn find_line_number(content: &str, byte_offset: usize) -> usize {
@@ -702,5 +724,53 @@ div { color: red; }
         let script = extract_vue_script(content);
         assert!(script.contains("import { ref } from 'vue'"));
         assert!(script.contains("const message = ref"));
+    }
+
+    #[test]
+    fn test_extract_vue_script_preserves_line_numbers() {
+        let content = "<template>\n  <div>hello</div>\n</template>\n\n<script setup lang=\"ts\">\nimport { ref } from 'vue'\nconst count = ref(0)\nfunction increment() { count.value++ }\n</script>\n";
+        let script = extract_vue_script(content);
+        // <template> block is 3 lines + 1 empty + <script> tag = 5 lines before content
+        // So script content should start at line 6
+        let lines: Vec<&str> = script.lines().collect();
+        // First 5 lines should be empty (preserving offset)
+        assert_eq!(lines[0], "", "line 1 should be empty (template)");
+        assert_eq!(lines[1], "", "line 2 should be empty (template)");
+        assert_eq!(lines[2], "", "line 3 should be empty (template)");
+        assert_eq!(lines[3], "", "line 4 should be empty (blank)");
+        assert_eq!(lines[4], "", "line 5 should be empty (script tag)");
+        assert!(lines[5].contains("import"), "line 6 should have import");
+        assert!(lines[6].contains("const count"), "line 7 should have const");
+        assert!(lines[7].contains("function increment"), "line 8 should have function");
+    }
+
+    #[test]
+    fn test_vue_script_setup_symbols() {
+        let content = "<template>\n  <div>{{ count }}</div>\n</template>\n\n<script setup lang=\"ts\">\nimport { ref, computed } from 'vue'\nconst count = ref(0)\nconst API_URL = 'https://example.com'\nfunction increment() { count.value++ }\nconst doubled = computed(() => count.value * 2)\n</script>\n";
+
+        let script = extract_vue_script(content);
+        let symbols = parse_typescript_symbols(&script).unwrap();
+
+        // Should find the function
+        assert!(symbols.iter().any(|s| s.name == "increment" && s.kind == SymbolKind::Function),
+            "should find 'increment' function");
+        // Should find UPPER_CASE constant
+        assert!(symbols.iter().any(|s| s.name == "API_URL" && s.kind == SymbolKind::Constant),
+            "should find 'API_URL' constant");
+        // Line numbers should reflect Vue file position (not start from 1)
+        let increment = symbols.iter().find(|s| s.name == "increment").unwrap();
+        assert_eq!(increment.line, 9, "increment should be on line 9 of Vue file");
+    }
+
+    #[test]
+    fn test_extract_svelte_script_preserves_line_numbers() {
+        let content = "<script lang=\"ts\">\nimport { onMount } from 'svelte'\nlet count = 0\nfunction increment() { count++ }\n</script>\n\n<main>\n  <p>{count}</p>\n</main>\n";
+        let script = extract_svelte_script(content);
+        let lines: Vec<&str> = script.lines().collect();
+        // <script> tag is on line 1, content starts on line 2
+        assert_eq!(lines[0], "", "line 1 should be empty (script tag)");
+        assert!(lines[1].contains("import"), "line 2 should have import");
+        assert!(lines[2].contains("let count"), "line 3 should have let count");
+        assert!(lines[3].contains("function increment"), "line 4 should have function");
     }
 }
