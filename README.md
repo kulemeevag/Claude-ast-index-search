@@ -1,4 +1,4 @@
-# ast-index v3.25.1
+# ast-index v3.26.0
 
 Fast code search CLI for 23 programming languages. Native Rust implementation.
 
@@ -383,6 +383,12 @@ exclude:
 ```
 
 ## Changelog
+
+### 3.26.0
+- **Ruby callers/call-tree support** — `rb` added to scanned extensions, Ruby-specific call patterns (`.method` without parens, `:method_name` symbol refs, `method.chain`), bang/question method handling (`authenticate_user!`, `valid?`) (contributed by @melnik0v)
+- **Ruby parser improvements** — show `include`/`extend`/`prepend` in outline, `validate` (without `s`), all ActiveRecord callbacks (`after_commit`, `around_*`), multi-arg `attr_reader`/`attr_writer`/`attr_accessor`, Rails DSL (`enum`, `delegate`, `has_one_attached`, `encrypts`, `store_accessor`), `RSpec.describe` with receiver, `shared_examples`/`shared_context` (contributed by @melnik0v)
+- **Vue/Svelte outline support** — `outline` command now works for `.vue` and `.svelte` files with correct line numbers, Vue 3 Composition API (`ref`, `reactive`, `computed`, `defineProps`, `defineEmits`), lifecycle hooks, `export default` detection (contributed by @melnik0v)
+- **TypeScript/JS callers expansion** — `ts`, `tsx`, `js`, `jsx`, `vue`, `svelte` added to `callers` and `todo` command extensions
 
 ### 3.25.1
 - **Configuration file support** — create `.ast-index.yaml` in project root to set `project_type`, `roots`, `exclude`, `no_ignore` (CLI flags override config values)
