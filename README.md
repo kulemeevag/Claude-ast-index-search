@@ -1,4 +1,4 @@
-# ast-index v3.26.0
+# ast-index v3.26.1
 
 Fast code search CLI for 27 programming languages. Native Rust implementation.
 
@@ -388,6 +388,12 @@ exclude:
 ```
 
 ## Changelog
+
+### 3.26.1
+- **Windows support** — `winget install defendend.ast-index` now available
+- **Gemini CLI support** — added skill installation instructions
+- **MIT license** — added LICENSE file
+- **Release automation** — winget auto-update in GitHub Actions release workflow
 
 ### 3.26.0
 - **Ruby callers/call-tree support** — `rb` added to scanned extensions, Ruby-specific call patterns (`.method` without parens, `:method_name` symbol refs, `method.chain`), bang/question method handling (`authenticate_user!`, `valid?`) (contributed by @melnik0v)
